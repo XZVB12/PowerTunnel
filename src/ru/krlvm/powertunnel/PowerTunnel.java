@@ -7,11 +7,19 @@ import org.littleshoot.proxy.*;
 import org.littleshoot.proxy.impl.DefaultHttpProxyServer;
 import org.xbill.DNS.*;
 import ru.krlvm.powertunnel.data.DataStore;
+import ru.krlvm.powertunnel.enums.SNITrick;
+import ru.krlvm.powertunnel.enums.ServerStatus;
 import ru.krlvm.powertunnel.exceptions.DataStoreException;
 import ru.krlvm.powertunnel.exceptions.PTUnknownHostException;
 import ru.krlvm.powertunnel.data.Settings;
 import ru.krlvm.powertunnel.filter.ProxyFilter;
 import ru.krlvm.powertunnel.frames.*;
+import ru.krlvm.powertunnel.frames.journal.BlacklistFrame;
+import ru.krlvm.powertunnel.frames.journal.JournalFrame;
+import ru.krlvm.powertunnel.frames.journal.UserListFrame;
+import ru.krlvm.powertunnel.frames.journal.WhitelistFrame;
+import ru.krlvm.powertunnel.pac.PACGenerator;
+import ru.krlvm.powertunnel.pac.PACScriptStore;
 import ru.krlvm.powertunnel.system.MirroredOutputStream;
 import ru.krlvm.powertunnel.system.SystemProxy;
 import ru.krlvm.powertunnel.system.TrayManager;
@@ -44,8 +52,8 @@ import java.util.*;
 public class PowerTunnel {
 
     public static final String NAME = "PowerTunnel";
-    public static final String VERSION = "1.11";
-    public static final int VERSION_CODE = 25;
+    public static final String VERSION = "1.13";
+    public static final int VERSION_CODE = 30;
     public static final String REPOSITORY_URL = "https://github.com/krlvm/PowerTunnel";
 
     private static final String HEADER =
@@ -58,21 +66,33 @@ public class PowerTunnel {
     private static ServerStatus STATUS = ServerStatus.NOT_RUNNING;
     public static String SERVER_IP_ADDRESS = "127.0.0.1";
     public static int SERVER_PORT = 8085;
+
     private static boolean AUTO_PROXY_SETUP_ENABLED = true;
+    private static boolean PROXY_PAC_ENABLED = false;
+    private static DataStore PROXY_PAC_STORE = null;
 
     private static boolean ALLOW_REQUESTS_TO_ORIGIN_SERVER = false;
 
     public static final Settings SETTINGS = new Settings();
-    /** Optional settings */
+    /* Optional settings */
     public static boolean ALLOW_INVALID_HTTP_PACKETS = true;
+    public static boolean CHUNKING_ENABLED = true;
     public static boolean FULL_CHUNKING = false;
     public static int CHUNK_SIZE = 2;
     public static int PAYLOAD_LENGTH = 0; //21 recommended
     public static boolean USE_DNS_SEC = false;
     public static String DNS_SERVER = null;
+    public static boolean APPLY_HTTP_TRICKS_TO_HTTPS = false;
     public static boolean MIX_HOST_CASE = false;
+    public static boolean COMPLETE_MIX_HOST_CASE = false;
+    public static boolean MIX_HOST_HEADER_CASE = true;
+    public static boolean DOT_AFTER_HOST_HEADER = true;
     private static String GOVERNMENT_BLACKLIST_MIRROR = null;
-    /** ----------------- */
+    public static boolean LINE_BREAK_BEFORE_GET = false;
+    public static boolean ADDITIONAL_SPACE_AFTER_GET = false;
+    public static SNITrick SNI_TRICK = null;
+    public static String SNI_TRICK_FAKE_HOST;
+    /* ----------------- */
 
     public static boolean FULL_OUTPUT_MIRRORING = false;
 
@@ -112,33 +132,45 @@ public class PowerTunnel {
                 switch (arg) {
                     case "help": {
                         Utility.print(HEADER);
-                        Utility.print("Available arguments:\n" +
-                                " -help                                display help\n" +
-                                " -start                               starts server right after load\n" +
-                                " -console                             console mode, without UI\n" +
-                                " -government-blacklist-from [URL]     automatically fill government blacklist from URL\n" +
-                                " -use-dns-sec                         enables DNSSec mode with the Google DNS servers\n" +
-                                " -use-dns-server [URL]                overrides DNS settings (DNS over HTTPS supported)\n" +
-                                " -disallow-invalid-packets            HTTP packets without Host header will be thrown out (unrecommended)\n" +
-                                " -full-chunking                       enables chunking the whole packets\n" +
-                                " -mix-host-case                       enables 'Host' header case mix (unstable)\n" +
-                                " -send-payload [length]               to bypass HTTP blocking, 21 is recommended\n" +
-                                " -chunk-size [size]                   sets size of one chunk\n" +
-                                " -ip [IP Address]                     sets IP Address\n" +
-                                " -port [Port]                         sets port\n" +
-                                " -enable-journal                      enables PowerTunnel journal (when UI enabled)\n" +
-                                " -enable-logs                         enables PowerTunnel logs (when UI enabled)\n" +
-                                " -enable-log-to-file                  enables PowerTunnel logger and log file\n" +
-                                " -with-web-ui [appendix]              enables Web UI at http://" + String.format(PowerTunnelMonitor.FAKE_ADDRESS_TEMPLATE, "[appendix]") + "\n" +
-                                " -disable-auto-proxy-setup            disables auto proxy setup on Windows\n" +
-                                " -auto-proxy-setup-win-ie             auto proxy setup using IE instead of native API on Windows\n" +
-                                " -full-output-mirroring               fully mirrors system output to the log\n" +
-                                " -set-scale-factor [n]                sets DPI scale factor (for testing purposes)\n" +
-                                " -disable-tray                        disables tray icon\n" +
-                                " -disable-native-lf                   disables native L&F (when UI enabled)\n" +
-                                " -disable-ui-scaling                  disables UI scaling (when UI enabled)\n" +
-                                " -disable-updater                     disables the update notifier\n" +
-                                " -debug                               enables debug");
+                        Utility.print(
+                            "Available arguments:\n" +
+                            " -help                                display help\n" +
+                            " -start                               starts server right after load\n" +
+                            " -console                             console mode, without UI\n" +
+                            " -government-blacklist-from [URL]     automatically fill government blacklist from URL\n" +
+                            " -use-dns-sec                         enables DNSSec mode with the Google DNS servers\n" +
+                            " -use-dns-server [URL]                overrides DNS settings (DNS over HTTPS supported)\n" +
+                            " -disallow-invalid-packets            HTTP packets without Host header will be thrown out (unrecommended)\n" +
+                            " -disable-chunking                    HTTPS: disables packet chunking (fragmentation)\n" +
+                            " -full-chunking                       HTTPS: enables chunking the whole packets (requires chunking enabled)\n" +
+                            " -chunk-size [size]                   HTTPS: sets size of one chunk\n" +
+                            " -sni-trick [trick]                   HTTPS: enable SNI tricks: 1 - spoil, 2 - erase, 3 - fake; (requires Root CA installation)\n" +
+                            " -sni-trick-fake-host [host]          HTTPS: host that will used with 'fake' SNI Trick\n" +
+                            " -line-break-get                      HTTP:  inserts a line break before 'GET' method\n" +
+                            " -space-after-get                     HTTP:  inserts a space after 'GET' method\n" +
+                            " -apply-http-https                    HTTP:  apply enabled HTTP tricks to HTTPS\n" +
+                            " -mix-host-case                       HTTP:  enables 'Host' header value case mix\n" +
+                            " -complete-mix-host-case              HTTP:  complete 'Host' header value case mix\n" +
+                            " -disable-mix-host-header-case        HTTP:  disables 'Host' header case mix\n" +
+                            " -disable-dot-after-host-header       HTTP:  disables dot after host header\n" +
+                            " -send-payload [length]               HTTP:  sends payload to bypass blocking, 21 is recommended\n" +
+                            " -ip [IP Address]                     sets IP Address\n" +
+                            " -port [Port]                         sets port\n" +
+                            " -enable-journal                      enables PowerTunnel journal (when UI enabled)\n" +
+                            " -enable-logs                         enables PowerTunnel logs (when UI enabled)\n" +
+                            " -enable-log-to-file                  enables PowerTunnel logger and log file\n" +
+                            " -with-web-ui [appendix]              enables Web UI at http://" + String.format(PowerTunnelMonitor.FAKE_ADDRESS_TEMPLATE, "[appendix]") + "\n" +
+                            " -disable-auto-proxy-setup            disables auto proxy setup (supported OS: Windows)\n" +
+                            " -enable-proxy-pac                    enables generation of PAC file on startup\n" +
+                            " -auto-proxy-setup-win-ie             auto proxy setup using IE instead of native API on Windows\n" +
+                            " -full-output-mirroring               fully mirrors system output to the log\n" +
+                            " -set-scale-factor [n]                sets DPI scale factor (for testing purposes)\n" +
+                            " -disable-tray                        disables tray icon\n" +
+                            " -disable-native-lf                   disables native L&F (when UI enabled)\n" +
+                            " -disable-ui-scaling                  disables UI scaling (when UI enabled)\n" +
+                            " -disable-updater                     disables the update notifier\n" +
+                            " -debug                               enables debug"
+                        );
                         System.exit(0);
                         break;
                     }
@@ -164,14 +196,40 @@ public class PowerTunnel {
                         CONSOLE_MODE = true;
                         break;
                     }
+                    case "disable-chunking": {
+                        SETTINGS.setTemporaryValue(Settings.ENABLE_CHUNKING, "false");
+                        break;
+                    }
                     case "full-chunking": {
                         SETTINGS.setTemporaryValue(Settings.FULL_CHUNKING, "true");
-                        Utility.print("[#] Full-chunking mode enabled");
+                        break;
+                    }
+                    case "apply-http-https": {
+                        SETTINGS.setTemporaryValue(Settings.APPLY_HTTP_TRICKS_TO_HTTPS, "true");
                         break;
                     }
                     case "mix-host-case": {
                         SETTINGS.setTemporaryValue(Settings.MIX_HOST_CASE, "true");
-                        Utility.print("[#] Enabled case mix for the 'Host' header");
+                        break;
+                    }
+                    case "complete-mix-host-case": {
+                        SETTINGS.setTemporaryValue(Settings.COMPLETE_MIX_HOST_CASE, "true");
+                        break;
+                    }
+                    case "disable-mix-host-header-case": {
+                        SETTINGS.setTemporaryValue(Settings.MIX_HOST_HEADER_CASE, "false");
+                        break;
+                    }
+                    case "disable-dot-after-host-header": {
+                        SETTINGS.setTemporaryValue(Settings.DOT_AFTER_HOST_HEADER, "false");
+                        break;
+                    }
+                    case "line-break-get": {
+                        SETTINGS.setTemporaryValue(Settings.LINE_BREAK_BEFORE_GET, "true");
+                        break;
+                    }
+                    case "space-after-get": {
+                        SETTINGS.setTemporaryValue(Settings.ADDITIONAL_SPACE_AFTER_GET, "true");
                         break;
                     }
                     case "enable-journal": {
@@ -188,6 +246,10 @@ public class PowerTunnel {
                     }
                     case "disable-auto-proxy-setup": {
                         SETTINGS.setTemporaryValue(Settings.AUTO_PROXY_SETUP_ENABLED, "false");
+                        break;
+                    }
+                    case "enable-proxy-pac": {
+                        SETTINGS.setTemporaryValue(Settings.PROXY_PAC_ENABLED, "true");
                         break;
                     }
                     case "disallow-invalid-packets": {
@@ -269,6 +331,21 @@ public class PowerTunnel {
                                     }
                                     break;
                                 }
+                                case "erase-sni": {
+                                    try {
+                                        int id = Integer.parseInt(value);
+                                        SNITrick trick = SNITrick.fromID(id);
+                                        if(trick == null) {
+                                            Utility.print("[x] Unknown SNI trick ID");
+                                        } else {
+                                            SETTINGS.setTemporaryValue(Settings.SNI_TRICK, value);
+                                            Utility.print("[#] SNI trick set to '%s (%s)'", trick.name(), id);
+                                        }
+                                    } catch (NumberFormatException ex) {
+                                        Utility.print("[x] Invalid SNI Trick ID");
+                                    }
+                                    break;
+                                }
                                 case "set-scale-factor": {
                                     try {
                                         scaleFactor = Float.parseFloat(value);
@@ -313,6 +390,7 @@ public class PowerTunnel {
             if(uiSettings[0]) {
                 if(scaleFactor != -1) {
                     SwingDPI.setScaleFactor(scaleFactor);
+                    SwingDPI.setScaleApplied(true);
                 } else {
                     SwingDPI.applyScalingAutomatically();
                 }
@@ -429,7 +507,7 @@ public class PowerTunnel {
             throw new PTUnknownHostException(SERVER_IP_ADDRESS, PTUnknownHostException.Type.SERVER_IP, ex);
         }
         boolean overrideDns = DNS_SERVER != null && !DNS_SERVER.isEmpty();
-        boolean doh = DNS_SERVER.startsWith("https://");
+        boolean doh = DNS_SERVER != null && DNS_SERVER.startsWith("https://");
         if (overrideDns) {
             if(doh) {
                 if (DNS_SERVER.endsWith("/")) {
@@ -438,6 +516,17 @@ public class PowerTunnel {
                 Utility.print("[*] DNS over HTTPS is enabled: '" + DNS_SERVER + "'");
             } else {
                 Utility.print("[*] DNS override enabled: '" + DNS_SERVER + "'");
+            }
+        }
+        if (SNI_TRICK != null) {
+            try {
+                bootstrap.withManInTheMiddle(MITMUtility.mitmManager());
+                Utility.print("[*] SNI Tricks is enabled\n" +
+                        "    You have to install PowerTunnel Root CA\n" +
+                        "    Please, read the following manual: " + SNITrick.SUPPORT_REFERENCE);
+            } catch (Exception ex) {
+                Utility.print("[x] Failed to initialize MITM Manager for SNI Tricks\n" +
+                              "    Follow this link for troubleshooting: " + SNITrick.SUPPORT_REFERENCE);
             }
         }
         if (USE_DNS_SEC) {
@@ -450,25 +539,36 @@ public class PowerTunnel {
             } catch (UnknownHostException ex) {
                 throw new PTUnknownHostException(DNS_SERVER, PTUnknownHostException.Type.DNS, ex);
             }
-            bootstrap.withServerResolver(new HostResolver() {
-                @Override
-                public InetSocketAddress resolve(String host, int port) throws UnknownHostException {
-                    try {
-                        Lookup lookup = new Lookup(host, Type.A);
-                        lookup.setResolver(resolver);
-                        Record[] records = lookup.run();
-                        if (lookup.getResult() == Lookup.SUCCESSFUL) {
-                            return new InetSocketAddress(((ARecord) records[0]).getAddress(), port);
-                        } else {
-                            throw new UnknownHostException(lookup.getErrorString());
-                        }
-                    } catch (Exception ex) {
-                        Utility.print("[x] Failed to resolve '%s': %s", host, ex.getMessage());
-                        Debugger.debug(ex);
-                        throw new UnknownHostException(String.format("Failed to resolve '%s': %s", host, ex.getMessage()));
+            bootstrap.withServerResolver((host, port) -> {
+                try {
+                    Lookup lookup = new Lookup(host, Type.A);
+                    lookup.setResolver(resolver);
+                    Record[] records = lookup.run();
+                    if (lookup.getResult() == Lookup.SUCCESSFUL) {
+                        return new InetSocketAddress(((ARecord) records[0]).getAddress(), port);
+                    } else {
+                        throw new UnknownHostException(lookup.getErrorString());
                     }
+                } catch (Exception ex) {
+                    Utility.print("[x] Failed to resolve '%s': %s", host, ex.getMessage());
+                    Debugger.debug(ex);
+                    throw new UnknownHostException(String.format("Failed to resolve '%s': %s", host, ex.getMessage()));
                 }
             });
+        }
+        if(PROXY_PAC_ENABLED) {
+            if(PROXY_PAC_STORE == null) {
+                PROXY_PAC_STORE = new PACScriptStore();
+            }
+            try {
+                PROXY_PAC_STORE.write(PACGenerator.generatePAC(SERVER_IP_ADDRESS, SERVER_PORT, GOVERNMENT_BLACKLIST));
+                GOVERNMENT_BLACKLIST.clear();
+                GOVERNMENT_BLACKLIST.add("*");
+                Utility.print("[i] PAC script is generated, global bypass mode is enabled");
+            } catch (IOException ex) {
+                Utility.print("[x] Failed to write PAC script: %s", ex.getMessage());
+                Debugger.debug(ex);
+            }
         }
         try {
             SERVER = bootstrap.start();
@@ -538,19 +638,16 @@ public class PowerTunnel {
     }
 
     public static void handleClosing() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                if (PowerTunnel.getStatus() == ServerStatus.RUNNING) {
-                    PowerTunnel.stop();
-                } else {
-                    PowerTunnel.safeUserListSave();
-                }
-                if(trayManager.isLoaded()) {
-                    trayManager.unload();
-                }
-                System.exit(0);
+        new Thread(() -> {
+            if (PowerTunnel.getStatus() == ServerStatus.RUNNING) {
+                PowerTunnel.stop();
+            } else {
+                PowerTunnel.safeUserListSave();
             }
+            if(trayManager.isLoaded()) {
+                trayManager.unload();
+            }
+            System.exit(0);
         }).start();
     }
 
@@ -654,17 +751,29 @@ public class PowerTunnel {
 
         SERVER_IP_ADDRESS = SETTINGS.getOption(Settings.SERVER_IP_ADDRESS);
         SERVER_PORT = SETTINGS.getIntOption(Settings.SERVER_PORT);
+
         AUTO_PROXY_SETUP_ENABLED = SETTINGS.getBooleanOption(Settings.AUTO_PROXY_SETUP_ENABLED);
+        PROXY_PAC_ENABLED = SETTINGS.getBooleanOption(Settings.PROXY_PAC_ENABLED);
 
         ALLOW_INVALID_HTTP_PACKETS = SETTINGS.getBooleanOption(Settings.ALLOW_INVALID_HTTP_PACKETS);
+        CHUNKING_ENABLED = SETTINGS.getBooleanOption(Settings.ENABLE_CHUNKING);
         FULL_CHUNKING = SETTINGS.getBooleanOption(Settings.FULL_CHUNKING);
         CHUNK_SIZE = SETTINGS.getIntOption(Settings.CHUNK_SIZE);
         PAYLOAD_LENGTH = SETTINGS.getIntOption(Settings.PAYLOAD_LENGTH);
         MIX_HOST_CASE = SETTINGS.getBooleanOption(Settings.MIX_HOST_CASE);
+        COMPLETE_MIX_HOST_CASE = SETTINGS.getBooleanOption(Settings.COMPLETE_MIX_HOST_CASE);
+        MIX_HOST_HEADER_CASE = SETTINGS.getBooleanOption(Settings.MIX_HOST_HEADER_CASE);
+        DOT_AFTER_HOST_HEADER = SETTINGS.getBooleanOption(Settings.DOT_AFTER_HOST_HEADER);
+        LINE_BREAK_BEFORE_GET = SETTINGS.getBooleanOption(Settings.LINE_BREAK_BEFORE_GET);
+        ADDITIONAL_SPACE_AFTER_GET = SETTINGS.getBooleanOption(Settings.ADDITIONAL_SPACE_AFTER_GET);
+        SNI_TRICK = SNITrick.fromID(SETTINGS.getIntOption(Settings.SNI_TRICK));
+        SNI_TRICK_FAKE_HOST = SETTINGS.getOption(Settings.SNI_TRICK_FAKE_HOST);
+
         USE_DNS_SEC = SETTINGS.getBooleanOption(Settings.USE_DNS_SEC);
         DNS_SERVER = SETTINGS.getOption(Settings.DNS_ADDRESS);
 
         ALLOW_REQUESTS_TO_ORIGIN_SERVER = SETTINGS.getBooleanOption(Settings.ALLOW_REQUESTS_TO_ORIGIN_SERVER);
+        APPLY_HTTP_TRICKS_TO_HTTPS = SETTINGS.getBooleanOption(Settings.APPLY_HTTP_TRICKS_TO_HTTPS);
     }
 
     public static TrayManager getTray() {
@@ -684,6 +793,10 @@ public class PowerTunnel {
             ex.printStackTrace();
             Utility.print();
         }
+    }
+
+    public static boolean isHTTPMethodTricksEnabled() {
+        return ADDITIONAL_SPACE_AFTER_GET || LINE_BREAK_BEFORE_GET;
     }
 
     /**
@@ -718,6 +831,7 @@ public class PowerTunnel {
             return;
         }
         JOURNAL.put(address, JOURNAL_DATE_FORMAT.format(new Date()));
+        journalFrame.refill();
     }
 
     /**

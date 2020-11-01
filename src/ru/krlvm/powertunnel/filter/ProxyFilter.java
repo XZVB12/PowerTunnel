@@ -1,10 +1,6 @@
 package ru.krlvm.powertunnel.filter;
 
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.DefaultHttpResponse;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpRequest;
-import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.*;
 import org.littleshoot.proxy.HttpFiltersAdapter;
 import ru.krlvm.powertunnel.PowerTunnel;
 import ru.krlvm.powertunnel.utilities.HttpUtility;
@@ -38,25 +34,29 @@ public class ProxyFilter extends HttpFiltersAdapter {
     public HttpResponse clientToProxyRequest(HttpObject httpObject) {
         if (httpObject instanceof HttpRequest) {
             HttpRequest request = (HttpRequest) httpObject;
+
             if(PowerTunnel.isWebUIEnabled() && PowerTunnelMonitor.checkUri(request.getUri())) {
-                Utility.print("[i] Accepted Web UI connection");
+                Utility.print(" [i] Accepted Web UI connection");
                 return PowerTunnelMonitor.getResponse(request.getUri());
             }
             if(!request.headers().contains("Host")) {
-                Utility.print("[i] Invalid packet received: Host header not found");
+                Utility.print(" [i] Invalid packet received: Host header not found");
                 return PowerTunnel.ALLOW_INVALID_HTTP_PACKETS ? null :
                         HttpUtility.getStub("Bad request");
             }
             String host = HttpUtility.formatHost(request.headers().get("Host"));
 
             PowerTunnel.addToJournal(host);
-            Utility.print("[i] %s / %s", request.getMethod(), host);
+            Utility.print("[i] %s / %s", request.method(), host);
 
             if(!PowerTunnel.isUserWhitelisted(host) && PowerTunnel.isUserBlacklisted(host)) {
                 Utility.print(" [!] Access denied by user: " + host);
                 return HttpUtility.getStub("This website is blocked by user");
             }
 
+            if(request.method() == HttpMethod.CONNECT && !PowerTunnel.APPLY_HTTP_TRICKS_TO_HTTPS) {
+                return null;
+            }
             if(PowerTunnel.isBlockedByGovernment(host)) {
                 circumventDPI(request);
                 Utility.print(" [+] Trying to bypass DPI: " + host);
@@ -95,30 +95,51 @@ public class ProxyFilter extends HttpFiltersAdapter {
     }
 
     /**
-     * DPI circumvention algorithm
+     * DPI circumvention algorithm for HTTP requests
      *
      * @param request - original HttpRequest
      */
     private static void circumventDPI(HttpRequest request) {
         String host = request.headers().get("Host");
         if(PowerTunnel.MIX_HOST_CASE) {
-            StringBuilder modified = new StringBuilder();
-            for(int i = 0; i < host.length(); i++) {
-                char c = host.toCharArray()[i];
-                if(i % 2 == 0) {
-                    c = Character.toUpperCase(c);
+            if(PowerTunnel.COMPLETE_MIX_HOST_CASE) {
+                StringBuilder modified = new StringBuilder();
+                for (int i = 0; i < host.length(); i++) {
+                    char c = host.toCharArray()[i];
+                    if (i % 2 == 0) {
+                        c = Character.toUpperCase(c);
+                    }
+                    modified.append(c);
                 }
-                modified.append(c);
+                host = modified.toString();
+            } else {
+                host = host.substring(0, host.length()-1) + host.substring(host.length()-1).toUpperCase();
             }
-            host = modified.toString();
         }
-        request.headers().remove("Host");
         if(PowerTunnel.PAYLOAD_LENGTH > 0) {
+            request.headers().remove("Host");
             for (int i = 0; i < PowerTunnel.PAYLOAD_LENGTH; i++) {
                 request.headers().add("X-Padding" + i, PAYLOAD.get(i));
             }
         }
-        request.headers().add("hOSt", host + ".");
+        if(request.method() != HttpMethod.CONNECT && PowerTunnel.isHTTPMethodTricksEnabled()) {
+            String method = request.method().name();
+            if(PowerTunnel.LINE_BREAK_BEFORE_GET) {
+                method = "\r\n" + method;
+            }
+            if(PowerTunnel.ADDITIONAL_SPACE_AFTER_GET) {
+                method = method + " ";
+            }
+            request.setMethod(new HttpMethod(method));
+        }
+        if(PowerTunnel.DOT_AFTER_HOST_HEADER) {
+            host = host + ".";
+            request.headers().remove("Host");
+        }
+        if(!request.headers().contains("Host")) {
+            String hostHeader = PowerTunnel.MIX_HOST_HEADER_CASE ? "hOSt" : "Host";
+            request.headers().add(hostHeader, host);
+        }
     }
 
     public static final List<String> PAYLOAD = new LinkedList<>();

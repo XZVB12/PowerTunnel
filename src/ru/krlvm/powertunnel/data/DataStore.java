@@ -63,24 +63,43 @@ public class DataStore {
      * @throws IOException - read failure
      */
     public List<String> load() throws IOException {
+        return filteredLoad(null);
+    }
+
+    /**
+     * Retrieves filtered data
+     *
+     * @param filter - filter
+     *
+     * @return - filtered data store data
+     * @throws IOException - read failure
+     */
+    public List<String> filteredLoad(final Filter filter) throws IOException {
         loadedLines = new ArrayList<>();
         File file = getFile();
         if(file.exists()) {
             BufferedReader reader = new BufferedReader(new FileReader(file));
             String line;
             while ((line = reader.readLine()) != null) {
+                if(filter != null) {
+                    if(!filter.accept(line)) {
+                        continue;
+                    }
+                }
                 loadedLines.add(line);
             }
             reader.close();
-            return loadedLines;
         } else {
             create(file);
             if(defaults != null) {
                 write(defaults);
             }
             loadedLines = defaults;
-            return loadedLines;
         }
+        if(filter != null && loadedLines.isEmpty()) {
+            loadedLines = null;
+        }
+        return loadedLines;
     }
 
     /**
@@ -90,7 +109,17 @@ public class DataStore {
      * @throws IOException - write failure
      */
     public void create(File file) throws IOException {
-        write(file, new ArrayList<String>());
+        write(file, new ArrayList<>());
+    }
+
+    /**
+     * Creates data store
+     *
+     * @param line - data store content
+     * @throws IOException - write failure
+     */
+    public void write(String line) throws IOException {
+        write(getFile(), Collections.singletonList(line));
     }
 
     /**
@@ -131,7 +160,7 @@ public class DataStore {
      *
      * @return data store file extension
      */
-    public String getFileFormat() {
+    public String getFileExtension() {
         return "txt";
     }
 
@@ -163,7 +192,7 @@ public class DataStore {
      * @return data store file
      */
     public File getFile() {
-        return new File(getFileName() + EXTENSION_SEPARATOR + getFileFormat());
+        return new File(getFileName() + EXTENSION_SEPARATOR + getFileExtension());
     }
 
     /**
@@ -173,5 +202,9 @@ public class DataStore {
      */
     public String getFileName() {
         return fileName;
+    }
+
+    public interface Filter {
+        boolean accept(String line);
     }
 }

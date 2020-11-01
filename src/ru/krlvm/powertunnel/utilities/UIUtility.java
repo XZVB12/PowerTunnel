@@ -5,6 +5,7 @@ import ru.krlvm.powertunnel.frames.ControlFrame;
 import ru.krlvm.swingdpi.SwingDPI;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import javax.swing.event.HyperlinkEvent;
 import javax.swing.event.HyperlinkListener;
@@ -54,13 +55,18 @@ public class UIUtility {
         }
     }
 
+    public static JEditorPane getLabelWithHyperlinkSupport(String html, String additionalStyles) {
+        return getLabelWithHyperlinkSupport(html, additionalStyles, false);
+    }
+
     /**
      * Retrieves JEditorPane with hyperlink action support
      *
      * @param html - HTML code
+     * @param padding - visual padding
      * @return JEditorPane with hyperlink action support
      */
-    public static JEditorPane getLabelWithHyperlinkSupport(String html, String additionalStyles) {
+    public static JEditorPane getLabelWithHyperlinkSupport(String html, String additionalStyles, boolean padding) {
         //We will copy style from this JLabel
         JLabel label = new JLabel();
         Color background = label.getBackground();
@@ -77,21 +83,22 @@ public class UIUtility {
         JEditorPane pane = new JEditorPane("text/html", "<html><body style=\"" + style + "\">" + html + "</body></html>");
 
         //Handle anchor
-        pane.addHyperlinkListener(new HyperlinkListener() {
-            @Override
-            public void hyperlinkUpdate(HyperlinkEvent e) {
-                if (e.getEventType().equals(HyperlinkEvent.EventType.ACTIVATED)) {
-                    try {
-                        Desktop.getDesktop().browse(e.getURL().toURI());
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                    }
+        pane.addHyperlinkListener(e -> {
+            if (e.getEventType().equals(HyperlinkEvent.EventType.ACTIVATED)) {
+                try {
+                    Desktop.getDesktop().browse(e.getURL().toURI());
+                } catch (Exception ex) {
+                    ex.printStackTrace();
                 }
             }
         });
 
         pane.setEditable(false);
-        pane.setBorder(new LineBorder(background, (int)(3*SwingDPI.getScaleFactor())));
+        if(padding) {
+            pane.setBorder(new LineBorder(background, (int) (3 * SwingDPI.getScaleFactor())));
+        } else {
+            pane.setBorder(new EmptyBorder(0,0,0,0));
+        }
         pane.setBackground(label.getBackground());
         pane.setHighlighter(null);
 
